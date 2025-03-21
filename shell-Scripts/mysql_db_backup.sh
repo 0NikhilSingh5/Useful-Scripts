@@ -1,119 +1,153 @@
 #!/bin/bash
 
-# Configuration
-BACKUP_DIR="C:\\Backup\\RDS-Backups"
-S3_BUCKET="s3://readywire-rds-backup"
-EXPIRES_IN=86400  # 1 day in seconds
+# Colors for output
+GREEN='\033[0;32m'
+RED='\033[0;31m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
 
-# Change directory to RDS-Backups
-cd "$BACKUP_DIR" || { echo "Failed to change directory to $BACKUP_DIR. Exiting..."; exit 1; }
+# Function to read password securely
+read_password() {
+    unset password
+    prompt="$1"
+    echo -e -n "${YELLOW}$prompt${NC}"
+    while IFS= read -r -s -n 1 char; do
+        # Check for Enter key (end of password input)
+        if [[ -z $char ]]; then
+            break
+        fi
+        # Check for Backspace (delete last character)
+        if [[ $char == $'\177' ]]; then
+            if [ ${#password} -gt 0 ]; then
+                password=${password::-1}
+                echo -en "\b \b"
+            fi
+        else
+            password+="$char"
+            echo -n "*"
+        fi
+    done
+    echo
+}
 
-# Prompt the user to choose an RDS endpoint
-echo -e "Choose an RDS endpoint:\n1. database1 \n2. aws-rds-db1 \n3. awsrds-sbox-2020 \n4. aws-rds-prd1 "
-read -r Choice
+# User Prompt
+echo -e "\n${YELLOW}Please enter database connection details:${NC}\n"
+echo ""
+echo -e -n "${YELLOW}DB Host URL: ${NC}"
+read db_host
+echo ""
+echo -e -n "${YELLOW}Username: ${NC}"
+read username
+echo ""
+read_password "Password: "
+echo ""
+echo -e -n "${YELLOW}Ticket Number: ${NC}"
+read ticket_num
 
-# Set the endpoint and username based on the user's choice
-case $Choice in
-    1)
-        Endpoint="hostname1.c17kchzxi7ws.ap-south-1.rds.amazonaws.com"
-        Username="rwadmin"
-        ;;
-    2)
-        Endpoint="hostname-db.c17kchzxi7ws.ap-south-1.rds.amazonaws.com"
-        Username="admin"
-        ;;
-    3)
-        Endpoint="hostname1-sbox-.c17kchzxi7ws.ap-south-1.rds.amazonaws.com"
-        Username="rdsadminsbox2020"
-        ;;
-    4)
-        Endpoint="hostname1-prd.c17kchzxi7ws.ap-south-1.rds.amazonaws.com"
-        Username="admin"
-        ;;
-    *)
-        echo "Invalid choice. Exiting..."
-        exit 1
-        ;;
-esac
+# Connection established animation
+echo -n "Establishing connection..."
 
-# Read the password for the chosen endpoint
-echo -e "Enter the password for $Username:"
-read -rs Password
+for i in {1..4}; do
+    echo -n "."
+    sleep 0.3
+done
+echo -e "\nConnection Established!"
+
+# List databases
+echo -e "\n${GREEN}Connection established successfully!!${NC}"
+echo -e "\n${YELLOW}Available databases:${NC}"
+databases=$(mysql -h "$db_host" -u "$username" -p"$password" -e "SHOW DATABASES;" 2>/dev/null | grep -v "Database")
+
+if [ $? -ne 0 ]; then
+    echo -e "${RED}Failed to connect to database. Please check your credentials.${NC}"
+    exit 1
+fi
+
+echo "$databases"
 echo ""
 
-# Check Schemas
-echo -e "\nDo you want to check your schemas? [Y/N]"
-read -r Choice
-if [[ "$Choice" =~ ^[Yy]$ ]]; then
-    mysql -u "$Username" -p"$Password" -h "$Endpoint" -e "SHOW SCHEMAS;"
-elif [[ "$Choice" =~ ^[Nn]$ ]]; then
-    echo -e "okay...\n"
+echo -e -n "${YELLOW}Enter database name from the above list: ${NC}"
+echo ""
+
+read db_name
+
+# Generate backup filename
+curr_date=$(date +"%d%b")
+backup_file="${ticket_num}${db_name}${curr_date}.sql"
+backup_path="/home/ubuntu/Backup/$backup_file"
+
+# Take backup
+echo -e "\n${GREEN}Starting database backup...${NC}\n"
+time (/home/ubuntu/mysqldump-8.0.35/mysql-8.0.35-linux-glibc2.28-x86_64/bin/mysqldump -h"$db_host" -u"$username" -p"$password" "$db_name" --triggers --routines --events --opt --single-transaction --set-gtid-purged=OFF | pv -cN mysqldump >"$backup_path")
+
+if [ $? -eq 0 ]; then
+    echo -e "\n${GREEN}Backup completed successfully!${NC}\n"
 else
-    echo -e "\nInvalid choice. Please enter 'Y' or 'N'. Exiting..."
+    echo -e "\n${RED}Backup failed!${NC}"
     exit 1
 fi
 
-# Getting Schema to Backup
-echo -e "\nEnter the name of the schema you want to backup:"
-read -r SchemaName
-
-# Validate if the entered schema name exists
-attempt=0
-while [ "$attempt" -lt 3 ]; do
-    schema_exists=$(mysql -u "$Username" -p"$Password" -h "$Endpoint" -e "SHOW DATABASES LIKE '$SchemaName';" | wc -l)
-    if [ "$schema_exists" -eq 2 ]; then
-        echo "Schema '$SchemaName' found."
-        break
-    else
-        if [ "$attempt" -lt 2 ]; then
-            echo "Schema '$SchemaName' does not exist. Please try again."
-            attempt=$((attempt + 1))
-            read -r SchemaName
-        else
-            echo "You have entered the wrong Schema name. Maximum attempts (3) reached. Exiting..."
-            exit 1
-        fi
-    fi
-done
-
-# Backup the schema
-echo "Creating backup...\n"
-BackupName="${SchemaName}_$(date +%Y%m%d_%H%M%S).sql"
-
-echo "Creating backup: $BackupName"
-mysqldump -u "$Username" -p"$Password" -h "$Endpoint" --single-transaction --progress="Status: --" --routines --triggers --events "$SchemaName" > "$BackupName"
-if [ $? -ne 0 ]; then
-    echo "Error creating backup. Exiting..."
+# Change permissions
+chmod 777 "$backup_path"
+if [ $? -eq 0 ]; then
+    echo -e "\n${GREEN}Permissions updated successfully!${NC}\n"
+else
+    echo -e "\n${RED}Failed to update permissions!${NC}"
     exit 1
 fi
 
-# Post backup steps
-echo "\nBackup completed successfully."
-
-# Remove DEFINER clauses from dump
-sed 's/\sDEFINER=`[^`]*`@`[^`]*`//g' -i "$BackupName"
-if [ $? -ne 0 ]; then
-    echo "Error removing DEFINER clauses from backup file. Exiting..."
+# Remove definer
+cd /home/ubuntu/Backup
+echo -e "${GREEN}Removing Definer ...."
+sed 's/\sDEFINER=`[^`]*`@`[^`]*`//g' -i "$backup_file"
+if [ $? -eq 0 ]; then
+    echo -e "\n${GREEN}Definer removed successfully!${NC}\n"
+else
+    echo -e "\n${RED}Failed to remove definer!${NC}\n"
     exit 1
 fi
-echo "DEFINER clauses removed."
 
-# Zip the backup file in .7z format
-7z a "${BackupName}.7z" "$BackupName"
-if [ $? -ne 0 ]; then
-    echo "Error zipping backup file. Exiting..."
+# Create 7z archive
+
+backup_file="${ticket_num}${db_name}${curr_date}.sql"
+z_file="${ticket_num}${db_name}${curr_date}.7z"
+
+echo -e "\nCreating 7z archive..."
+cd /home/ubuntu/Backup
+7z a "$z_file" "$backup_file"
+
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}7z archive created successfully!${NC}\n"
+else
+    echo -e "${RED}Failed to create 7z archive!${NC}\n"
     exit 1
 fi
-echo "Backup file zipped as ${BackupName}.7z"
 
-# Upload the zipped file to S3 bucket
-aws s3 cp "${BackupName}.7z" "$S3_BUCKET"
-if [ $? -ne 0 ]; then
-    echo "Error uploading zipped backup file to S3. Exiting..."
+chmod 644 "/home/ubuntu/Backup/$z_file"
+
+
+# Upload to S3
+echo -e "Uploading to S3...\n"
+aws s3 cp "/home/ubuntu/Backup/$z_file" "s3://readywire-rds-backup/" 2>/dev/null
+
+if [ $? -eq 0 ]; then
+    echo -e "${GREEN}File uploaded to S3 successfully!${NC}\n"
+else
+    echo -e "${RED}Failed to upload file to S3!${NC}"
     exit 1
 fi
-echo "Zipped backup file uploaded to $S3_BUCKET"
 
-# Generating pre-signed URL, valid for 1 day
-pre_signed_url=$(aws s3 presign "$S3_BUCKET/${BackupName}.7z" --expires-in "$EXPIRES_IN")
-echo "Download Link for backup (valid for 1 day): $pre_signed_url"
+
+#Generating Pre-signed URL
+
+echo -e "${YELLOW}Creating Pre-signed URL...${NC}\n"
+presigned_url=$(aws s3 presign "s3://readywire-rds-backup/$z_file" --expires-in 604800)
+if [ $? -eq 0 ]; then
+   echo -e "Presigned URL (valid for 7 days):\n${GREEN}$presigned_url${NC}\n"
+else
+   echo -e "${RED}Failed to generate presigned URL!${NC}"
+   exit 1
+fi
+
+
+echo -e "\n \n${GREEN}All operations completed successfully!${NC}"
