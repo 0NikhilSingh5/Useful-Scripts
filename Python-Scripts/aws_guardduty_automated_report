@@ -1,3 +1,33 @@
+"""
+AWS GuardDuty Findings Report Generator
+
+This module collects AWS GuardDuty findings from the past 7 days and generates 
+an Excel report containing details of those findings. The report includes information 
+such as finding title, event time, severity, description, and associated AWS resources.
+
+Prerequisites:
+    - AWS credentials configured with GuardDuty access permissions
+    - Python packages: boto3, openpyxl
+    - Skeleton Excel template file named 'GuardDutyReport.xlsx' in the script directory
+
+Usage:
+    Simply run the script:
+    $ python guardduty_report.py
+    
+    The script will:
+    1. Connect to AWS GuardDuty service
+    2. Retrieve findings from the past 7 days
+    3. Format and store the findings in an Excel report
+    4. Save the report with a timestamp-based filename
+
+Output:
+    - Excel file named "GuardDutyReport-DD-MMM-YYYY.xlsx" with findings data
+    - Console output showing the total number of findings and the output filename
+
+Author: [Your Name]
+Version: 1.0
+"""
+
 import boto3
 from datetime import datetime, timedelta
 from openpyxl import load_workbook
