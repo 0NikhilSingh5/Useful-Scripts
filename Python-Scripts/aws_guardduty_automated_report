@@ -4,21 +4,25 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Border, Side
 import os
+# Get the current date and time
 current_date = datetime.now()
 
+# Initialize AWS GuardDuty client
 guardduty = boto3.client('guardduty')
 now = datetime.utcnow()
 seven_days_ago = now - timedelta(days=7)
 
+# Get the GuardDuty detector ID
 detectors = guardduty.list_detectors()
 detector_id = detectors['DetectorIds'][0]
 
-# variables for pagination
+# Initialize variables for pagination
 next_token = None
 all_findings = []
 
-# Fetch findings
+# Fetch findings from GuardDuty
 while True:
+# Set up parameters for the list_findings API call
     params = {
         'DetectorId': detector_id,
         'FindingCriteria': {
@@ -34,28 +38,29 @@ while True:
         },
         'MaxResults': 50
     }
-    
+    # Add NextToken for pagination if available
     if next_token:
         params['NextToken'] = next_token
-    
+    # Call the list_findings API
     response = guardduty.list_findings(**params)
     finding_ids = response['FindingIds']
-    
+    # If findings are returned, get the detailed information
     if finding_ids:
         findings = guardduty.get_findings(DetectorId=detector_id, FindingIds=finding_ids)
         all_findings.extend(findings['Findings'])
-    
+    # Check for more pages of results
     next_token = response.get('NextToken')
     if not next_token:
         break
 
-# Load the existing Excel 
-workbook = load_workbook('GuardDutyReport.xlsx')
+# Load the existing Excel workbook
+#add the skeleton excell to root dir
+workbook = load_workbook('GuardDutyReport.xlsx') 
 sheet = workbook.active
 sheet_name = current_date.strftime("Report-%d-%m-%Y")
 sheet.title = sheet_name
 
-# column mappings
+# Define column mappings for the Excel sheet
 column_mappings = {
     'A': 'Title',
     'D': 'EventFirstSeen',
@@ -68,8 +73,10 @@ column_mappings = {
     'L': 'PublicIp'
 }
 
+# Set the report title in the Excel sheet
 sheet['A1'] = current_date.strftime("AWS GuardDuty Report %d/%m/%Y")
 
+# Populate the Excel sheet with findings data
 for row, finding in enumerate(all_findings, start=3):
     for col, field in column_mappings.items():
         cell = sheet[f'{col}{row}']
@@ -91,24 +98,24 @@ for row, finding in enumerate(all_findings, start=3):
             cell.value = finding.get('Resource', {}).get('InstanceDetails', {}).get('NetworkInterfaces', [{}])[0].get('PrivateIpAddress', '')
         elif field == 'PublicIp':
             cell.value = finding.get('Resource', {}).get('InstanceDetails', {}).get('NetworkInterfaces', [{}])[0].get('PublicIp', '')
-
+# Define border style for cells
 thin_border = Border(left=Side(style='thin'), 
                      right=Side(style='thin'), 
                      top=Side(style='thin'), 
                      bottom=Side(style='thin'))
-
+# Apply borders to all cells in the sheet
 for row in sheet.iter_rows(min_row=1, max_row=len(all_findings)+2, min_col=1, max_col=12):
     for cell in row:
         cell.border = thin_border
-        
+# Generate a unique filename for the Excel report        
 base_filename = current_date.strftime("GuardDutyReport-%d-%b-%Y.xlsx")
 filename = base_filename
 counter=0
 while os.path.exists(filename):
     counter += 1
     filename = f"GuardDutyReport-{current_date.strftime('%d-%m-%Y')}({counter}).xlsx"
-
+# Save the workbook
 workbook.save(filename)
-
+# Print summary information
 print(f"Total findings in the last 7 days: {len(all_findings)}")
 print(f"Data has been written to the Excel file: {filename}")
