@@ -1,0 +1,114 @@
+import boto3
+from datetime import datetime, timedelta
+from openpyxl import load_workbook
+from openpyxl.utils import get_column_letter
+from openpyxl.styles import Border, Side
+import os
+current_date = datetime.now()
+
+guardduty = boto3.client('guardduty')
+now = datetime.utcnow()
+seven_days_ago = now - timedelta(days=7)
+
+detectors = guardduty.list_detectors()
+detector_id = detectors['DetectorIds'][0]
+
+# variables for pagination
+next_token = None
+all_findings = []
+
+# Fetch findings
+while True:
+    params = {
+        'DetectorId': detector_id,
+        'FindingCriteria': {
+            'Criterion': {
+                'updatedAt': {
+                    'Gte': int(seven_days_ago.timestamp() * 1000)
+                }
+            }
+        },
+        'SortCriteria': {
+            'AttributeName': 'updatedAt',
+            'OrderBy': 'DESC'
+        },
+        'MaxResults': 50
+    }
+    
+    if next_token:
+        params['NextToken'] = next_token
+    
+    response = guardduty.list_findings(**params)
+    finding_ids = response['FindingIds']
+    
+    if finding_ids:
+        findings = guardduty.get_findings(DetectorId=detector_id, FindingIds=finding_ids)
+        all_findings.extend(findings['Findings'])
+    
+    next_token = response.get('NextToken')
+    if not next_token:
+        break
+
+# Load the existing Excel 
+workbook = load_workbook('GuardDutyReport.xlsx')
+sheet = workbook.active
+sheet_name = current_date.strftime("Report-%d-%m-%Y")
+sheet.title = sheet_name
+
+# column mappings
+column_mappings = {
+    'A': 'Title',
+    'D': 'EventFirstSeen',
+    'E': 'Severity',
+    'G': 'Description',
+    'H': 'DetectorId',
+    'I': 'AvailabilityZone',
+    'J': 'InstanceId',
+    'K': 'PrivateIpAddress',
+    'L': 'PublicIp'
+}
+
+sheet['A1'] = current_date.strftime("AWS GuardDuty Report %d/%m/%Y")
+
+for row, finding in enumerate(all_findings, start=3):
+    for col, field in column_mappings.items():
+        cell = sheet[f'{col}{row}']
+        if field == 'Title':
+            cell.value = finding.get('Title', '')
+        elif field == 'EventFirstSeen':
+            cell.value = finding.get('Service', {}).get('EventFirstSeen', '')
+        elif field == 'Severity':
+            cell.value = finding.get('Severity', '')
+        elif field == 'Description':
+            cell.value = finding.get('Description', '')
+        elif field == 'DetectorId':
+            cell.value = detector_id
+        elif field == 'AvailabilityZone':
+            cell.value = finding.get('Resource', {}).get('InstanceDetails', {}).get('AvailabilityZone', '')
+        elif field == 'InstanceId':
+            cell.value = finding.get('Resource', {}).get('InstanceDetails', {}).get('InstanceId', '')
+        elif field == 'PrivateIpAddress':
+            cell.value = finding.get('Resource', {}).get('InstanceDetails', {}).get('NetworkInterfaces', [{}])[0].get('PrivateIpAddress', '')
+        elif field == 'PublicIp':
+            cell.value = finding.get('Resource', {}).get('InstanceDetails', {}).get('NetworkInterfaces', [{}])[0].get('PublicIp', '')
+
+thin_border = Border(left=Side(style='thin'), 
+                     right=Side(style='thin'), 
+                     top=Side(style='thin'), 
+                     bottom=Side(style='thin'))
+
+for row in sheet.iter_rows(min_row=1, max_row=len(all_findings)+2, min_col=1, max_col=12):
+    for cell in row:
+        cell.border = thin_border
+        
+base_filename = current_date.strftime("GuardDutyReport-%d-%b-%Y.xlsx")
+filename = base_filename
+counter=0
+while os.path.exists(filename):
+    counter += 1
+    filename = f"GuardDutyReport-{current_date.strftime('%d-%m-%Y')}({counter}).xlsx"
+
+workbook.save(filename)
+
+print(f"Total findings in the last 7 days: {len(all_findings)}")
+print(f"Data has been written to the Excel file: {filename}")
